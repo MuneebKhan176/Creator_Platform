@@ -7,7 +7,7 @@ export interface ApiResponse<T = unknown> {
   data?: T;
 }
 
-/** Set a bar open
+/**
  * POSTs JSON to the backend and returns the parsed ApiResponse.
  * Includes credentials so the HttpOnly auth cookie can be set after verification.
  */
@@ -21,7 +21,7 @@ export async function apiPost<T = unknown>(path: string, body: unknown): Promise
       credentials: "include",
       body: JSON.stringify(body),
     });
-  } catch (networkError) {
+  } catch {
     throw new Error("Could not reach the server. Please check your connection and try again.");
   }
 
