@@ -5,7 +5,6 @@ import com.application.authentication.utils.JwtUtil;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
-import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -14,11 +13,10 @@ import org.springframework.security.web.authentication.WebAuthenticationDetailsS
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.util.Optional;
 
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
-    private static final String COOKIE_NAME = "auth_token";
+    private static final String COOKIE_NAME = "access_token";
 
     private final JwtUtil jwtUtil;
     private final UserRepository userRepository;
@@ -33,7 +31,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                                      HttpServletResponse response,
                                      FilterChain filterChain) throws ServletException, IOException {
 
-        extractToken(request).ifPresent(token -> {
+        CookieUtil.readCookie(request, COOKIE_NAME).ifPresent(token -> {
             try {
                 Long userId = jwtUtil.getUserId(token);
                 userRepository.findById(userId).ifPresent(user -> {
@@ -46,22 +44,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     }
                 });
             } catch (JwtException | IllegalArgumentException e) {
+                // Expired/invalid access token: this is expected and routine —
+                // it's exactly what /refresh exists to fix. Leave the request
+                // anonymous; downstream authorization decides what happens next.
                 SecurityContextHolder.clearContext();
             }
         });
 
         filterChain.doFilter(request, response);
-    }
-
-    private Optional<String> extractToken(HttpServletRequest request) {
-        if (request.getCookies() == null) {
-            return Optional.empty();
-        }
-        for (Cookie cookie : request.getCookies()) {
-            if (COOKIE_NAME.equals(cookie.getName())) {
-                return Optional.ofNullable(cookie.getValue()).filter(v -> !v.isBlank());
-            }
-        }
-        return Optional.empty();
     }
 }

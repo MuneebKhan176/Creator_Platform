@@ -7,6 +7,7 @@ import com.application.authentication.dtos.UserResponse;
 import com.application.authentication.dtos.VerifyEmailRequest;
 import com.application.authentication.security.UserPrincipal;
 import com.application.authentication.services.AuthService;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -37,9 +38,17 @@ public class AuthController {
 
     @PostMapping("/login")
     public ResponseEntity<ApiResponse<UserResponse>> login(@Valid @RequestBody LoginRequest request,
+                                                             HttpServletRequest httpRequest,
                                                              HttpServletResponse response) {
-        UserResponse user = authService.login(request, response);
+        UserResponse user = authService.login(request, httpRequest, response);
         return ResponseEntity.ok(ApiResponse.success("Logged in successfully.", user));
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<ApiResponse<UserResponse>> refresh(HttpServletRequest request,
+                                                               HttpServletResponse response) {
+        UserResponse user = authService.refresh(request, response);
+        return ResponseEntity.ok(ApiResponse.success("Token refreshed.", user));
     }
 
     @GetMapping("/me")
@@ -48,8 +57,15 @@ public class AuthController {
     }
 
     @PostMapping("/logout")
-    public ResponseEntity<ApiResponse<Void>> logout(HttpServletResponse response) {
-        authService.logout(response);
+    public ResponseEntity<ApiResponse<Void>> logout(HttpServletRequest request, HttpServletResponse response) {
+        authService.logout(request, response);
         return ResponseEntity.ok(ApiResponse.success("Logged out successfully."));
+    }
+
+    @PostMapping("/logout-all")
+    public ResponseEntity<ApiResponse<Void>> logoutAll(@AuthenticationPrincipal UserPrincipal principal,
+                                                         HttpServletResponse response) {
+        authService.logoutAll(principal, response);
+        return ResponseEntity.ok(ApiResponse.success("Logged out of all devices."));
     }
 }

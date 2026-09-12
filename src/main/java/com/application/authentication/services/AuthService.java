@@ -8,11 +8,17 @@ import com.application.authentication.entities.AccountStatus;
 import com.application.authentication.entities.CreatorProfile;
 import com.application.authentication.entities.PendingUser;
 import com.application.authentication.entities.User;
+import com.application.authentication.entities.UserSession;
 import com.application.authentication.exceptions.ApiException;
 import com.application.authentication.repositories.CreatorProfileRepository;
 import com.application.authentication.repositories.PendingUserRepository;
 import com.application.authentication.repositories.UserRepository;
+import com.application.authentication.repositories.UserSessionRepository;
+import com.application.authentication.security.CookieUtil;
+import com.application.authentication.security.UserPrincipal;
 import com.application.authentication.utils.JwtUtil;
+import com.application.authentication.utils.RefreshTokenUtil;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -31,31 +37,42 @@ public class AuthService {
     private static final int VERIFICATION_CODE_LENGTH = 6;
     private static final int VERIFICATION_EXPIRY_MINUTES = 10;
     private static final int MIN_PASSWORD_LENGTH = 8;
-    private static final String AUTH_COOKIE_NAME = "auth_token";
+    private static final String ACCESS_COOKIE_NAME = "access_token";
+    private static final String REFRESH_COOKIE_NAME = "refresh_token";
+    private static final String REFRESH_COOKIE_PATH = "/api/v1/auth";
 
     private final UserRepository userRepository;
     private final PendingUserRepository pendingUserRepository;
     private final CreatorProfileRepository creatorProfileRepository;
+    private final UserSessionRepository userSessionRepository;
     private final PasswordEncoder passwordEncoder;
     private final EmailService emailService;
     private final JwtUtil jwtUtil;
+    private final RefreshTokenUtil refreshTokenUtil;
     private final boolean cookieSecure;
+    private final long refreshTokenExpirationMs;
     private final SecureRandom secureRandom = new SecureRandom();
 
     public AuthService(UserRepository userRepository,
                         PendingUserRepository pendingUserRepository,
                         CreatorProfileRepository creatorProfileRepository,
+                        UserSessionRepository userSessionRepository,
                         PasswordEncoder passwordEncoder,
                         EmailService emailService,
                         JwtUtil jwtUtil,
-                        @Value("${app.cookie.secure}") boolean cookieSecure) {
+                        RefreshTokenUtil refreshTokenUtil,
+                        @Value("${app.cookie.secure}") boolean cookieSecure,
+                        @Value("${app.refresh-token.expiration-ms}") long refreshTokenExpirationMs) {
         this.userRepository = userRepository;
         this.pendingUserRepository = pendingUserRepository;
         this.creatorProfileRepository = creatorProfileRepository;
+        this.userSessionRepository = userSessionRepository;
         this.passwordEncoder = passwordEncoder;
         this.emailService = emailService;
         this.jwtUtil = jwtUtil;
+        this.refreshTokenUtil = refreshTokenUtil;
         this.cookieSecure = cookieSecure;
+        this.refreshTokenExpirationMs = refreshTokenExpirationMs;
     }
 
     @Transactional
@@ -92,16 +109,12 @@ public class AuthService {
             throw new ApiException(HttpStatus.CONFLICT, "Username is already taken");
         }
 
-        // If there's already a live (non-expired) pending registration, don't
-        // silently overwrite it — surface it so the user knows to check their
-        // inbox instead of unknowingly invalidating a code that already went out.
         pendingUserRepository.findByEmail(email).ifPresent(existing -> {
             if (Instant.now().isBefore(existing.getVerificationExpiry())) {
                 throw new ApiException(HttpStatus.CONFLICT,
                         "A verification code was already sent to this email. Check your inbox, " +
                         "or wait for it to expire before registering again.");
             }
-            // Expired and abandoned — safe to clear out and let them start over.
             pendingUserRepository.delete(existing);
         });
 
@@ -153,8 +166,8 @@ public class AuthService {
         return UserResponse.from(user);
     }
 
-    @Transactional(readOnly = true)
-    public UserResponse login(LoginRequest request, HttpServletResponse response) {
+    @Transactional
+    public UserResponse login(LoginRequest request, HttpServletRequest httpRequest, HttpServletResponse response) {
         String email = normalizeEmail(request.getEmail());
         String password = request.getPassword() == null ? "" : request.getPassword();
 
@@ -174,12 +187,122 @@ public class AuthService {
             throw new ApiException(HttpStatus.FORBIDDEN, "This account has been disabled.");
         }
 
-        issueAuthCookie(user, response);
+        return issueTokens(user, httpRequest, response);
+    }
+
+    /**
+     * Exchanges a valid, unexpired refresh token for a new access token, and
+     * rotates the refresh token itself (old one is revoked, a new one is issued).
+     */
+    @Transactional
+    public UserResponse refresh(HttpServletRequest request, HttpServletResponse response) {
+        String rawToken = CookieUtil.readCookie(request, REFRESH_COOKIE_NAME)
+                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "Not authenticated"));
+
+        String tokenHash = refreshTokenUtil.hash(rawToken);
+        UserSession session = userSessionRepository.findByRefreshTokenHash(tokenHash)
+                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "Session expired. Please log in again."));
+
+        if (session.getRevokedAt() != null) {
+            // This exact refresh token was already rotated away (or revoked via
+            // logout). Seeing it presented again means it was copied and reused
+            // after that point — treat it as a compromised session and kill
+            // every active session for this user as a precaution.
+            Long userId = session.getUser().getId();
+            Instant now = Instant.now();
+            userSessionRepository.findByUserIdAndRevokedAtIsNull(userId)
+                    .forEach(s -> s.setRevokedAt(now));
+
+            clearAccessTokenCookie(response);
+            clearRefreshTokenCookie(response);
+            throw new ApiException(HttpStatus.UNAUTHORIZED,
+                    "Security alert: this session was already used elsewhere. All sessions have been signed out — please log in again.");
+        }
+
+        if (Instant.now().isAfter(session.getExpiresAt())) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Session expired. Please log in again.");
+        }
+
+        User user = session.getUser();
+        if (user.getAccountStatus() != AccountStatus.ACTIVE) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "This account is no longer active.");
+        }
+
+        session.setLastUsedAt(Instant.now());
+        session.setRevokedAt(Instant.now());
+
+        return issueTokens(user, request, response);
+    }
+
+    @Transactional
+    public void logout(HttpServletRequest request, HttpServletResponse response) {
+        CookieUtil.readCookie(request, REFRESH_COOKIE_NAME).ifPresent(rawToken -> {
+            String tokenHash = refreshTokenUtil.hash(rawToken);
+            userSessionRepository.findByRefreshTokenHash(tokenHash)
+                    .filter(session -> session.getRevokedAt() == null)
+                    .ifPresent(session -> session.setRevokedAt(Instant.now()));
+        });
+
+        clearAccessTokenCookie(response);
+        clearRefreshTokenCookie(response);
+    }
+
+    @Transactional
+    public void logoutAll(UserPrincipal principal, HttpServletResponse response) {
+        Instant now = Instant.now();
+        userSessionRepository.findByUserIdAndRevokedAtIsNull(principal.getId())
+                .forEach(session -> session.setRevokedAt(now));
+
+        clearAccessTokenCookie(response);
+        clearRefreshTokenCookie(response);
+    }
+
+    /**
+     * Creates a new session row plus a fresh access-token cookie and
+     * refresh-token cookie. Shared by login() and refresh() (rotation).
+     */
+    private UserResponse issueTokens(User user, HttpServletRequest request, HttpServletResponse response) {
+        String rawRefreshToken = refreshTokenUtil.generateToken();
+        String refreshTokenHash = refreshTokenUtil.hash(rawRefreshToken);
+        Instant expiresAt = Instant.now().plusMillis(refreshTokenExpirationMs);
+
+        UserSession session = new UserSession(user, refreshTokenHash, expiresAt,
+                clientIp(request), clientUserAgent(request));
+        userSessionRepository.save(session);
+
+        setAccessTokenCookie(user, response);
+        setRefreshTokenCookie(rawRefreshToken, response);
+
         return UserResponse.from(user);
     }
 
-    public void logout(HttpServletResponse response) {
-        ResponseCookie cookie = ResponseCookie.from(AUTH_COOKIE_NAME, "")
+    private void setAccessTokenCookie(User user, HttpServletResponse response) {
+        String token = jwtUtil.generateAccessToken(user.getId(), user.getUsername());
+        ResponseCookie cookie = ResponseCookie.from(ACCESS_COOKIE_NAME, token)
+                .httpOnly(true)
+                .secure(cookieSecure)
+                .sameSite("Lax")
+                .path("/")
+                .maxAge(jwtUtil.getAccessTokenExpirationMs() / 1000)
+                .build();
+        response.addHeader("Set-Cookie", cookie.toString());
+    }
+
+    private void setRefreshTokenCookie(String rawToken, HttpServletResponse response) {
+        ResponseCookie cookie = ResponseCookie.from(REFRESH_COOKIE_NAME, rawToken)
+                .httpOnly(true)
+                .secure(cookieSecure)
+                .sameSite("Lax")
+                // Scoped to just the auth endpoints that need it, rather than "/"
+                // like the access token — no reason for it to go out on every request.
+                .path(REFRESH_COOKIE_PATH)
+                .maxAge(refreshTokenExpirationMs / 1000)
+                .build();
+        response.addHeader("Set-Cookie", cookie.toString());
+    }
+
+    private void clearAccessTokenCookie(HttpServletResponse response) {
+        ResponseCookie cookie = ResponseCookie.from(ACCESS_COOKIE_NAME, "")
                 .httpOnly(true)
                 .secure(cookieSecure)
                 .sameSite("Lax")
@@ -189,16 +312,28 @@ public class AuthService {
         response.addHeader("Set-Cookie", cookie.toString());
     }
 
-    private void issueAuthCookie(User user, HttpServletResponse response) {
-        String token = jwtUtil.generateToken(user.getId(), user.getUsername());
-        ResponseCookie cookie = ResponseCookie.from(AUTH_COOKIE_NAME, token)
+    private void clearRefreshTokenCookie(HttpServletResponse response) {
+        ResponseCookie cookie = ResponseCookie.from(REFRESH_COOKIE_NAME, "")
                 .httpOnly(true)
                 .secure(cookieSecure)
                 .sameSite("Lax")
-                .path("/")
-                .maxAge(jwtUtil.getExpirationMs() / 1000)
+                .path(REFRESH_COOKIE_PATH)
+                .maxAge(0)
                 .build();
         response.addHeader("Set-Cookie", cookie.toString());
+    }
+
+    private String clientIp(HttpServletRequest request) {
+        String forwarded = request.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            return forwarded.split(",")[0].trim();
+        }
+        return request.getRemoteAddr();
+    }
+
+    private String clientUserAgent(HttpServletRequest request) {
+        String userAgent = request.getHeader("User-Agent");
+        return userAgent == null ? "unknown" : userAgent;
     }
 
     private String normalizeEmail(String email) {

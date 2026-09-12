@@ -1,7 +1,6 @@
 package com.application.authentication.utils;
 
 import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,17 +14,17 @@ import java.util.Date;
 public class JwtUtil {
 
     private final SecretKey secretKey;
-    private final long expirationMs;
+    private final long accessTokenExpirationMs;
 
     public JwtUtil(@Value("${app.jwt.secret}") String secret,
-                    @Value("${app.jwt.expiration-ms}") long expirationMs) {
+                    @Value("${app.jwt.access-token-expiration-ms}") long accessTokenExpirationMs) {
         this.secretKey = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
-        this.expirationMs = expirationMs;
+        this.accessTokenExpirationMs = accessTokenExpirationMs;
     }
 
-    public String generateToken(Long userId, String username) {
+    public String generateAccessToken(Long userId, String username) {
         Date now = new Date();
-        Date expiry = new Date(now.getTime() + expirationMs);
+        Date expiry = new Date(now.getTime() + accessTokenExpirationMs);
 
         return Jwts.builder()
                 .subject(String.valueOf(userId))
@@ -36,10 +35,6 @@ public class JwtUtil {
                 .compact();
     }
 
-    /**
-     * Verifies signature and expiry and returns the claims.
-     * Throws JwtException (expired/malformed/tampered) or IllegalArgumentException (blank token).
-     */
     public Claims parseClaims(String token) {
         return Jwts.parser()
                 .verifyWith(secretKey)
@@ -52,7 +47,7 @@ public class JwtUtil {
         return Long.valueOf(parseClaims(token).getSubject());
     }
 
-    public long getExpirationMs() {
-        return expirationMs;
+    public long getAccessTokenExpirationMs() {
+        return accessTokenExpirationMs;
     }
 }
