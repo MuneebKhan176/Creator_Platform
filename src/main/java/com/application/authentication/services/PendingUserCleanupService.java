@@ -1,5 +1,6 @@
 package com.application.authentication.services;
 
+import com.application.authentication.repositories.PasswordResetTokenRepository;
 import com.application.authentication.repositories.PendingUserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,22 +15,29 @@ public class PendingUserCleanupService {
     private static final Logger log = LoggerFactory.getLogger(PendingUserCleanupService.class);
 
     private final PendingUserRepository pendingUserRepository;
+    private final PasswordResetTokenRepository passwordResetTokenRepository;
 
-    public PendingUserCleanupService(PendingUserRepository pendingUserRepository) {
+    public PendingUserCleanupService(PendingUserRepository pendingUserRepository,
+                                      PasswordResetTokenRepository passwordResetTokenRepository) {
         this.pendingUserRepository = pendingUserRepository;
+        this.passwordResetTokenRepository = passwordResetTokenRepository;
     }
 
-    // Runs once a minute. Catches pending registrations the user simply
-    // abandoned (never re-registered, never verified) that the check inside
-    // AuthService.register() would otherwise never touch.
     @Scheduled(fixedRate = 60_000)
     public void deleteExpiredPendingUsers() {
         try {
             pendingUserRepository.deleteByVerificationExpiryBefore(Instant.now());
         } catch (Exception e) {
-            // A failed cleanup run should never crash the scheduler thread or
-            // take down the app — just log it and try again next minute.
             log.error("Failed to clean up expired pending users", e);
+        }
+    }
+
+    @Scheduled(fixedRate = 60_000)
+    public void deleteExpiredPasswordResetTokens() {
+        try {
+            passwordResetTokenRepository.deleteByExpiresAtBefore(Instant.now());
+        } catch (Exception e) {
+            log.error("Failed to clean up expired password reset tokens", e);
         }
     }
 }

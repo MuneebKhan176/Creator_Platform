@@ -22,11 +22,15 @@ public class PendingUser {
     @Column(name = "password_hash", nullable = false, length = 255)
     private String passwordHash;
 
-    @Column(name = "verification_code", nullable = false, length = 6)
-    private String verificationCode;
+    // Holds a SHA-256 hash of the 6-digit code, never the plaintext code.
+    @Column(name = "verification_code", nullable = false, length = 64)
+    private String verificationCodeHash;
 
     @Column(name = "verification_expiry", nullable = false)
     private Instant verificationExpiry;
+
+    @Column(name = "attempts", nullable = false)
+    private int attempts = 0;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -35,12 +39,13 @@ public class PendingUser {
     }
 
     public PendingUser(String username, String email, String passwordHash,
-                        String verificationCode, Instant verificationExpiry) {
+                        String verificationCodeHash, Instant verificationExpiry) {
         this.username = username;
         this.email = email;
         this.passwordHash = passwordHash;
-        this.verificationCode = verificationCode;
+        this.verificationCodeHash = verificationCodeHash;
         this.verificationExpiry = verificationExpiry;
+        this.attempts = 0;
         this.createdAt = Instant.now();
     }
 
@@ -76,12 +81,12 @@ public class PendingUser {
         this.passwordHash = passwordHash;
     }
 
-    public String getVerificationCode() {
-        return verificationCode;
+    public String getVerificationCodeHash() {
+        return verificationCodeHash;
     }
 
-    public void setVerificationCode(String verificationCode) {
-        this.verificationCode = verificationCode;
+    public void setVerificationCodeHash(String verificationCodeHash) {
+        this.verificationCodeHash = verificationCodeHash;
     }
 
     public Instant getVerificationExpiry() {
@@ -90,6 +95,14 @@ public class PendingUser {
 
     public void setVerificationExpiry(Instant verificationExpiry) {
         this.verificationExpiry = verificationExpiry;
+    }
+
+    public int getAttempts() {
+        return attempts;
+    }
+
+    public void setAttempts(int attempts) {
+        this.attempts = attempts;
     }
 
     public Instant getCreatedAt() {
