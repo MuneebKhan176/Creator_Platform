@@ -51,9 +51,14 @@ export default function LoginPage() {
             className="rounded-md border border-gray-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
           />
 
-          <label htmlFor="password" className="mt-3 text-sm font-semibold text-gray-700">
-            Password
-          </label>
+          <div className="mt-3 flex items-center justify-between">
+            <label htmlFor="password" className="text-sm font-semibold text-gray-700">
+              Password
+            </label>
+            <a href="/forgot-password" className="text-xs text-blue-600 hover:underline">
+              Forgot password?
+            </a>
+          </div>
           <input
             id="password"
             type="password"
