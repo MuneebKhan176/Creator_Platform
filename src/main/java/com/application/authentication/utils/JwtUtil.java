@@ -1,5 +1,7 @@
 package com.application.authentication.utils;
 
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
@@ -17,15 +19,10 @@ public class JwtUtil {
 
     public JwtUtil(@Value("${app.jwt.secret}") String secret,
                     @Value("${app.jwt.expiration-ms}") long expirationMs) {
-        // HS256 requires a key of at least 256 bits (32 bytes). Make sure JWT_SECRET is long enough.
         this.secretKey = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.expirationMs = expirationMs;
     }
 
-    /**
-     * Generates a minimal JWT identifying the user. No passwords or sensitive
-     * data are ever placed in the payload.
-     */
     public String generateToken(Long userId, String username) {
         Date now = new Date();
         Date expiry = new Date(now.getTime() + expirationMs);
@@ -37,6 +34,22 @@ public class JwtUtil {
                 .expiration(expiry)
                 .signWith(secretKey)
                 .compact();
+    }
+
+    /**
+     * Verifies signature and expiry and returns the claims.
+     * Throws JwtException (expired/malformed/tampered) or IllegalArgumentException (blank token).
+     */
+    public Claims parseClaims(String token) {
+        return Jwts.parser()
+                .verifyWith(secretKey)
+                .build()
+                .parseSignedClaims(token)
+                .getPayload();
+    }
+
+    public Long getUserId(String token) {
+        return Long.valueOf(parseClaims(token).getSubject());
     }
 
     public long getExpirationMs() {

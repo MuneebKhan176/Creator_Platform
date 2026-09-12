@@ -1,7 +1,10 @@
 package com.application.authentication.services;
 
+import com.application.authentication.dtos.LoginRequest;
 import com.application.authentication.dtos.RegisterRequest;
+import com.application.authentication.dtos.UserResponse;
 import com.application.authentication.dtos.VerifyEmailRequest;
+import com.application.authentication.entities.AccountStatus;
 import com.application.authentication.entities.CreatorProfile;
 import com.application.authentication.entities.PendingUser;
 import com.application.authentication.entities.User;
@@ -11,9 +14,9 @@ import com.application.authentication.repositories.PendingUserRepository;
 import com.application.authentication.repositories.UserRepository;
 import com.application.authentication.utils.JwtUtil;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseCookie;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,7 +24,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.Optional;
 
 @Service
 public class AuthService {
@@ -29,6 +31,7 @@ public class AuthService {
     private static final int VERIFICATION_CODE_LENGTH = 6;
     private static final int VERIFICATION_EXPIRY_MINUTES = 10;
     private static final int MIN_PASSWORD_LENGTH = 8;
+    private static final String AUTH_COOKIE_NAME = "auth_token";
 
     private final UserRepository userRepository;
     private final PendingUserRepository pendingUserRepository;
@@ -82,7 +85,6 @@ public class AuthService {
                     "Password must be at least " + MIN_PASSWORD_LENGTH + " characters long");
         }
 
-        // Check against the permanent users table.
         if (userRepository.existsByEmail(email)) {
             throw new ApiException(HttpStatus.CONFLICT, "Email is already registered");
         }
@@ -90,9 +92,18 @@ public class AuthService {
             throw new ApiException(HttpStatus.CONFLICT, "Username is already taken");
         }
 
-        // Replace any previous pending registration for this email (e.g. user
-        // abandoned verification and is registering again / requesting a new code).
-        pendingUserRepository.findByEmail(email).ifPresent(pendingUserRepository::delete);
+        // If there's already a live (non-expired) pending registration, don't
+        // silently overwrite it — surface it so the user knows to check their
+        // inbox instead of unknowingly invalidating a code that already went out.
+        pendingUserRepository.findByEmail(email).ifPresent(existing -> {
+            if (Instant.now().isBefore(existing.getVerificationExpiry())) {
+                throw new ApiException(HttpStatus.CONFLICT,
+                        "A verification code was already sent to this email. Check your inbox, " +
+                        "or wait for it to expire before registering again.");
+            }
+            // Expired and abandoned — safe to clear out and let them start over.
+            pendingUserRepository.delete(existing);
+        });
 
         String passwordHash = passwordEncoder.encode(password);
         String code = generateVerificationCode();
@@ -104,15 +115,18 @@ public class AuthService {
         try {
             emailService.sendVerificationCode(email, code);
         } catch (Exception e) {
-            // Don't leave an orphaned pending registration the user can never verify.
             pendingUserRepository.delete(pendingUser);
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR,
                     "Failed to send verification email. Please try again.");
         }
     }
 
+    /**
+     * Activates the account. Deliberately does NOT log the user in — that's a
+     * separate, explicit step via /login, per the register -> verify -> login flow.
+     */
     @Transactional
-    public void verifyEmail(VerifyEmailRequest request, HttpServletResponse response) {
+    public UserResponse verifyEmail(VerifyEmailRequest request) {
         String email = normalizeEmail(request.getEmail());
         String code = request.getCode() == null ? "" : request.getCode().trim();
 
@@ -136,15 +150,54 @@ public class AuthService {
 
         pendingUserRepository.delete(pendingUser);
 
+        return UserResponse.from(user);
+    }
+
+    @Transactional(readOnly = true)
+    public UserResponse login(LoginRequest request, HttpServletResponse response) {
+        String email = normalizeEmail(request.getEmail());
+        String password = request.getPassword() == null ? "" : request.getPassword();
+
+        // Same generic message whether the email doesn't exist or the password is
+        // wrong, so a caller can't use login to enumerate registered emails.
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "Incorrect email or password"));
+
+        if (!passwordEncoder.matches(password, user.getPasswordHash())) {
+            throw new ApiException(HttpStatus.UNAUTHORIZED, "Incorrect email or password");
+        }
+
+        if (user.getAccountStatus() == AccountStatus.SUSPENDED) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "This account has been suspended.");
+        }
+        if (user.getAccountStatus() == AccountStatus.DISABLED) {
+            throw new ApiException(HttpStatus.FORBIDDEN, "This account has been disabled.");
+        }
+
+        issueAuthCookie(user, response);
+        return UserResponse.from(user);
+    }
+
+    public void logout(HttpServletResponse response) {
+        ResponseCookie cookie = ResponseCookie.from(AUTH_COOKIE_NAME, "")
+                .httpOnly(true)
+                .secure(cookieSecure)
+                .sameSite("Lax")
+                .path("/")
+                .maxAge(0)
+                .build();
+        response.addHeader("Set-Cookie", cookie.toString());
+    }
+
+    private void issueAuthCookie(User user, HttpServletResponse response) {
         String token = jwtUtil.generateToken(user.getId(), user.getUsername());
-        ResponseCookie cookie = ResponseCookie.from("auth_token", token)
+        ResponseCookie cookie = ResponseCookie.from(AUTH_COOKIE_NAME, token)
                 .httpOnly(true)
                 .secure(cookieSecure)
                 .sameSite("Lax")
                 .path("/")
                 .maxAge(jwtUtil.getExpirationMs() / 1000)
                 .build();
-
         response.addHeader("Set-Cookie", cookie.toString());
     }
 

@@ -31,13 +31,15 @@ export default function VerifyPage() {
     setState("verifying");
     setMessage("Verifying...");
     try {
-      const result = await apiPost("/api/auth/verify-email", {
-        email: trimmedEmail,
-        code: trimmedCode,
-      });
+      // change the endpoint:
+      const result = await apiPost("/api/v1/auth/verify-email", {
+      email: trimmedEmail,
+      code: trimmedCode,
+    });
       setState("success");
       setMessage(result.message);
-    } catch (err) {
+    }
+     catch (err) {
       const text = err instanceof Error ? err.message : "Registration failed.";
       setState("error");
       setMessage(text);

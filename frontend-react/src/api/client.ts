@@ -1,4 +1,3 @@
-// Base URL of the Spring Boot backend.
 export const API_BASE_URL = "http://localhost:4000";
 
 export interface ApiResponse<T = unknown> {
@@ -7,24 +6,7 @@ export interface ApiResponse<T = unknown> {
   data?: T;
 }
 
-/**
- * POSTs JSON to the backend and returns the parsed ApiResponse.
- * Includes credentials so the HttpOnly auth cookie can be set after verification.
- */
-export async function apiPost<T = unknown>(path: string, body: unknown): Promise<ApiResponse<T>> {
-  let response: Response;
-
-  try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
-      body: JSON.stringify(body),
-    });
-  } catch {
-    throw new Error("Could not reach the server. Please check your connection and try again.");
-  }
-
+async function parseResponse<T>(response: Response): Promise<ApiResponse<T>> {
   let parsed: ApiResponse<T>;
   try {
     parsed = await response.json();
@@ -37,4 +19,32 @@ export async function apiPost<T = unknown>(path: string, body: unknown): Promise
   }
 
   return parsed;
+}
+
+export async function apiPost<T = unknown>(path: string, body: unknown): Promise<ApiResponse<T>> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error("Could not reach the server. Please check your connection and try again.");
+  }
+  return parseResponse<T>(response);
+}
+
+export async function apiGet<T = unknown>(path: string): Promise<ApiResponse<T>> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method: "GET",
+      credentials: "include",
+    });
+  } catch {
+    throw new Error("Could not reach the server. Please check your connection and try again.");
+  }
+  return parseResponse<T>(response);
 }
