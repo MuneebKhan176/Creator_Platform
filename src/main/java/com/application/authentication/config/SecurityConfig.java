@@ -1,6 +1,7 @@
 package com.application.authentication.config;
 
 import com.application.authentication.repositories.UserRepository;
+import com.application.authentication.security.CsrfValidationFilter;
 import com.application.authentication.security.JwtAuthenticationFilter;
 import com.application.authentication.security.RestAccessDeniedHandler;
 import com.application.authentication.security.RestAuthenticationEntryPoint;
@@ -15,6 +16,7 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -51,6 +53,7 @@ public class SecurityConfig {
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         JwtAuthenticationFilter jwtAuthenticationFilter =
                 new JwtAuthenticationFilter(jwtUtil, userRepository);
+        CsrfValidationFilter csrfValidationFilter = new CsrfValidationFilter();
 
         http
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
@@ -61,6 +64,18 @@ public class SecurityConfig {
                 .exceptionHandling(handling -> handling
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler)
+                )
+                .headers(headers -> headers
+                        .frameOptions(frame -> frame.deny())
+                        .contentSecurityPolicy(csp -> csp.policyDirectives(
+                                "default-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"))
+                        .referrerPolicy(referrer -> referrer.policy(
+                                ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN))
+                        .permissionsPolicyHeader(permissions -> permissions.policy(
+                                "geolocation=(), camera=(), microphone=(), payment=()"))
+                        .httpStrictTransportSecurity(hsts -> hsts
+                                .includeSubDomains(true)
+                                .maxAgeInSeconds(31536000))
                 )
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(
@@ -80,7 +95,8 @@ public class SecurityConfig {
                                 .hasAnyRole("USER", "CREATOR", "BUSINESS", "ADMIN", "MODERATOR")
                         .anyRequest().authenticated()
                 )
-                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(csrfValidationFilter, JwtAuthenticationFilter.class);
 
         return http.build();
     }

@@ -19,7 +19,11 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(ApiException.class)
     public ResponseEntity<ApiResponse<Void>> handleApiException(ApiException ex) {
-        return ResponseEntity.status(ex.getStatus()).body(ApiResponse.error(ex.getMessage()));
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(ex.getStatus());
+        if (ex.getRetryAfterSeconds() != null) {
+            builder.header("Retry-After", String.valueOf(ex.getRetryAfterSeconds()));
+        }
+        return builder.body(ApiResponse.error(ex.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -33,10 +37,6 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(message));
     }
 
-    // Anything from the data access layer: connection drops, constraint
-    // violations, bad SQL, missing columns/tables. Logged in full server-side;
-    // the client only learns "it's a database problem", never the query or
-    // schema detail (that's an information-disclosure risk otherwise).
     @ExceptionHandler(DataAccessException.class)
     public ResponseEntity<ApiResponse<Void>> handleDataAccessException(DataAccessException ex) {
         log.error("Database error", ex);

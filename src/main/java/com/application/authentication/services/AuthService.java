@@ -2,18 +2,21 @@ package com.application.authentication.services;
 
 import com.application.authentication.dtos.*;
 import com.application.authentication.entities.AccountStatus;
-import com.application.authentication.entities.CreatorProfile;
+import com.application.profile.entities.CreatorProfile;
 import com.application.authentication.entities.PasswordResetToken;
 import com.application.authentication.entities.PendingUser;
 import com.application.authentication.entities.User;
 import com.application.authentication.entities.UserSession;
 import com.application.authentication.exceptions.ApiException;
-import com.application.authentication.repositories.CreatorProfileRepository;
+import com.application.profile.repositories.CreatorProfileRepository;
 import com.application.authentication.repositories.PasswordResetTokenRepository;
 import com.application.authentication.repositories.PendingUserRepository;
 import com.application.authentication.repositories.UserRepository;
 import com.application.authentication.repositories.UserSessionRepository;
+import com.application.authentication.security.ClientIpUtil;
 import com.application.authentication.security.CookieUtil;
+import com.application.authentication.security.LoginAttemptService;
+import com.application.authentication.security.RateLimitGuard;
 import com.application.authentication.security.UserPrincipal;
 import com.application.authentication.utils.JwtUtil;
 import com.application.authentication.utils.RefreshTokenUtil;
@@ -33,6 +36,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 
 @Service
 public class AuthService {
@@ -45,6 +49,7 @@ public class AuthService {
     private static final int MIN_PASSWORD_LENGTH = 8;
     private static final String ACCESS_COOKIE_NAME = "access_token";
     private static final String REFRESH_COOKIE_NAME = "refresh_token";
+    private static final String CSRF_COOKIE_NAME = "csrf_token";
     private static final String REFRESH_COOKIE_PATH = "/api/v1/auth";
 
     private final UserRepository userRepository;
@@ -56,6 +61,8 @@ public class AuthService {
     private final EmailService emailService;
     private final JwtUtil jwtUtil;
     private final RefreshTokenUtil refreshTokenUtil;
+    private final LoginAttemptService loginAttemptService;
+    private final RateLimitGuard rateLimitGuard;
     private final boolean cookieSecure;
     private final long refreshTokenExpirationMs;
     private final long passwordResetExpirationMs;
@@ -71,6 +78,8 @@ public class AuthService {
                         EmailService emailService,
                         JwtUtil jwtUtil,
                         RefreshTokenUtil refreshTokenUtil,
+                        LoginAttemptService loginAttemptService,
+                        RateLimitGuard rateLimitGuard,
                         @Value("${app.cookie.secure}") boolean cookieSecure,
                         @Value("${app.refresh-token.expiration-ms}") long refreshTokenExpirationMs,
                         @Value("${app.password-reset.expiration-ms}") long passwordResetExpirationMs,
@@ -84,6 +93,8 @@ public class AuthService {
         this.emailService = emailService;
         this.jwtUtil = jwtUtil;
         this.refreshTokenUtil = refreshTokenUtil;
+        this.loginAttemptService = loginAttemptService;
+        this.rateLimitGuard = rateLimitGuard;
         this.cookieSecure = cookieSecure;
         this.refreshTokenExpirationMs = refreshTokenExpirationMs;
         this.passwordResetExpirationMs = passwordResetExpirationMs;
@@ -154,10 +165,6 @@ public class AuthService {
         }
     }
 
-    /**
-     * Activates the account. Deliberately does NOT log the user in — that's a
-     * separate, explicit step via /login, per the register -> verify -> login flow.
-     */
     @Transactional
     public UserResponse verifyEmail(VerifyEmailRequest request) {
         String email = normalizeEmail(request.getEmail());
@@ -203,14 +210,10 @@ public class AuthService {
         return UserResponse.from(user);
     }
 
-    /**
-     * Always responds the same way whether or not a pending registration
-     * exists for this email — this endpoint must not be usable to probe
-     * which emails are mid-registration.
-     */
     @Transactional
     public void resendVerification(EmailRequest request) {
         String email = normalizeEmail(request.getEmail());
+        rateLimitGuard.checkResend(email);
 
         pendingUserRepository.findByEmail(email).ifPresent(pendingUser -> {
             String code = generateVerificationCode();
@@ -236,12 +239,14 @@ public class AuthService {
         String email = normalizeEmail(request.getEmail());
         String password = request.getPassword() == null ? "" : request.getPassword();
 
-        User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new ApiException(HttpStatus.UNAUTHORIZED, "Incorrect email or password"));
+        loginAttemptService.checkNotLocked(email);
 
-        if (!passwordEncoder.matches(password, user.getPasswordHash())) {
+        Optional<User> userOpt = userRepository.findByEmail(email);
+        if (userOpt.isEmpty() || !passwordEncoder.matches(password, userOpt.get().getPasswordHash())) {
+            loginAttemptService.recordFailure(email);
             throw new ApiException(HttpStatus.UNAUTHORIZED, "Incorrect email or password");
         }
+        User user = userOpt.get();
 
         if (user.getAccountStatus() == AccountStatus.SUSPENDED) {
             throw new ApiException(HttpStatus.FORBIDDEN, "This account has been suspended.");
@@ -250,6 +255,7 @@ public class AuthService {
             throw new ApiException(HttpStatus.FORBIDDEN, "This account has been disabled.");
         }
 
+        loginAttemptService.recordSuccess(email);
         return issueTokens(user, httpRequest, response);
     }
 
@@ -270,6 +276,7 @@ public class AuthService {
 
             clearAccessTokenCookie(response);
             clearRefreshTokenCookie(response);
+            clearCsrfCookie(response);
             throw new ApiException(HttpStatus.UNAUTHORIZED,
                     "Security alert: this session was already used elsewhere. All sessions have been signed out — please log in again.");
         }
@@ -300,6 +307,7 @@ public class AuthService {
 
         clearAccessTokenCookie(response);
         clearRefreshTokenCookie(response);
+        clearCsrfCookie(response);
     }
 
     @Transactional
@@ -310,6 +318,7 @@ public class AuthService {
 
         clearAccessTokenCookie(response);
         clearRefreshTokenCookie(response);
+        clearCsrfCookie(response);
     }
 
     // ---------------------------------------------------------------
@@ -319,6 +328,7 @@ public class AuthService {
     @Transactional
     public void forgotPassword(EmailRequest request) {
         String email = normalizeEmail(request.getEmail());
+        rateLimitGuard.checkForgotPassword(email);
 
         userRepository.findByEmail(email).ifPresent(user -> {
             String rawToken = refreshTokenUtil.generateToken();
@@ -331,12 +341,9 @@ public class AuthService {
             try {
                 emailService.sendPasswordResetEmail(email, link);
             } catch (Exception e) {
-                // Don't let a mail-sending failure leak whether the email
-                // exists — log it server-side and let the generic response stand.
                 log.error("Failed to send password reset email", e);
             }
         });
-        // Same response either way — handled by the controller.
     }
 
     @Transactional
@@ -378,9 +385,6 @@ public class AuthService {
         user.setPasswordHash(passwordEncoder.encode(newPassword));
         resetToken.setUsedAt(Instant.now());
 
-        // A password reset invalidates every existing session — if the reset
-        // was needed because the account was compromised, this locks out
-        // whoever else was logged in.
         Instant now = Instant.now();
         userSessionRepository.findByUserIdAndRevokedAtIsNull(user.getId())
                 .forEach(session -> session.setRevokedAt(now));
@@ -418,14 +422,13 @@ public class AuthService {
 
         user.setPasswordHash(passwordEncoder.encode(newPassword));
 
-        // Same reasoning as resetPassword(): force every device, including
-        // this one, to log in again with the new password.
         Instant now = Instant.now();
         userSessionRepository.findByUserIdAndRevokedAtIsNull(user.getId())
                 .forEach(session -> session.setRevokedAt(now));
 
         clearAccessTokenCookie(response);
         clearRefreshTokenCookie(response);
+        clearCsrfCookie(response);
     }
 
     // ---------------------------------------------------------------
@@ -463,6 +466,7 @@ public class AuthService {
         if (isCurrentSession) {
             clearAccessTokenCookie(response);
             clearRefreshTokenCookie(response);
+            clearCsrfCookie(response);
         }
     }
 
@@ -488,11 +492,12 @@ public class AuthService {
         Instant expiresAt = Instant.now().plusMillis(refreshTokenExpirationMs);
 
         UserSession session = new UserSession(user, refreshTokenHash, expiresAt,
-                clientIp(request), clientUserAgent(request));
+                ClientIpUtil.resolve(request), ClientIpUtil.userAgent(request));
         userSessionRepository.save(session);
 
         setAccessTokenCookie(user, response);
         setRefreshTokenCookie(rawRefreshToken, response);
+        setCsrfCookie(response);
 
         return UserResponse.from(user);
     }
@@ -520,6 +525,20 @@ public class AuthService {
         response.addHeader("Set-Cookie", cookie.toString());
     }
 
+    private void setCsrfCookie(HttpServletResponse response) {
+        String csrfToken = refreshTokenUtil.generateToken();
+        ResponseCookie cookie = ResponseCookie.from(CSRF_COOKIE_NAME, csrfToken)
+                // Must be readable by JS so the frontend can echo it back in a
+                // header — that's the whole double-submit mechanism.
+                .httpOnly(false)
+                .secure(cookieSecure)
+                .sameSite("Lax")
+                .path("/")
+                .maxAge(refreshTokenExpirationMs / 1000)
+                .build();
+        response.addHeader("Set-Cookie", cookie.toString());
+    }
+
     private void clearAccessTokenCookie(HttpServletResponse response) {
         ResponseCookie cookie = ResponseCookie.from(ACCESS_COOKIE_NAME, "")
                 .httpOnly(true)
@@ -542,17 +561,15 @@ public class AuthService {
         response.addHeader("Set-Cookie", cookie.toString());
     }
 
-    private String clientIp(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
-    }
-
-    private String clientUserAgent(HttpServletRequest request) {
-        String userAgent = request.getHeader("User-Agent");
-        return userAgent == null ? "unknown" : userAgent;
+    private void clearCsrfCookie(HttpServletResponse response) {
+        ResponseCookie cookie = ResponseCookie.from(CSRF_COOKIE_NAME, "")
+                .httpOnly(false)
+                .secure(cookieSecure)
+                .sameSite("Lax")
+                .path("/")
+                .maxAge(0)
+                .build();
+        response.addHeader("Set-Cookie", cookie.toString());
     }
 
     private String normalizeEmail(String email) {

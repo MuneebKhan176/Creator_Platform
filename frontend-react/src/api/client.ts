@@ -75,3 +75,38 @@ export async function apiDelete<T = unknown>(path: string): Promise<ApiResponse<
   }
   return parseResponse<T>(response);
 }
+
+export async function apiPut<T = unknown>(path: string, body: unknown): Promise<ApiResponse<T>> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method: "PUT",
+      headers: withCsrfHeader({ "Content-Type": "application/json" }),
+      credentials: "include",
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error("Could not reach the server. Please check your connection and try again.");
+  }
+  return parseResponse<T>(response);
+}
+
+export async function apiUpload<T = unknown>(path: string, file: File): Promise<ApiResponse<T>> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method: "POST",
+      // No Content-Type here on purpose — the browser sets
+      // multipart/form-data with the correct boundary itself.
+      headers: withCsrfHeader({}),
+      credentials: "include",
+      body: formData,
+    });
+  } catch {
+    throw new Error("Could not reach the server. Please check your connection and try again.");
+  }
+  return parseResponse<T>(response);
+}
