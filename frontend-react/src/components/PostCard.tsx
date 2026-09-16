@@ -1,5 +1,6 @@
 // frontend-react/src/components/PostCard.tsx
 import { useState } from "react";
+import { useAuth } from "../context/AuthContext";
 import type { Post } from "../api/posts";
 import { likePost, unlikePost } from "../api/likes";
 import { bookmarkPost, unbookmarkPost } from "../api/bookmarks";
@@ -17,6 +18,7 @@ interface PostCardProps {
 }
 
 export default function PostCard({ post, initialBookmarked = false, onBookmarkChange }: PostCardProps) {
+  const { user } = useAuth();
   const [liked, setLiked] = useState(post.likedByCurrentUser);
   const [likeCount, setLikeCount] = useState(post.likeCount);
   const [likePending, setLikePending] = useState(false);
@@ -67,7 +69,7 @@ export default function PostCard({ post, initialBookmarked = false, onBookmarkCh
         <div className="min-w-0">
           <span className="text-sm font-semibold text-gray-900">{post.authorUsername}</span>
         </div>
-        {post.authorId !== undefined && <FollowButton userId={post.authorId} />}
+        {user?.id !== post.authorId && <FollowButton userId={post.authorId} />}
       </div>
       <span className="mt-1 block text-xs text-gray-400">{formatTimestamp(post.createdAt)}</span>
 
