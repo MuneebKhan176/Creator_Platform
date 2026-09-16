@@ -1,15 +1,27 @@
 // frontend-react/src/components/FollowButton.tsx
-import { useState } from "react";
-import { followUser, unfollowUser } from "../api/follow";
+import { useEffect, useState } from "react";
+import { followUser, getFollowStatus, unfollowUser } from "../api/follow";
 
 interface FollowButtonProps {
   userId: number;
-  initiallyFollowing: boolean;
+  initiallyFollowing?: boolean;
 }
 
-export default function FollowButton({ userId, initiallyFollowing }: FollowButtonProps) {
+export default function FollowButton({ userId, initiallyFollowing = false }: FollowButtonProps) {
   const [following, setFollowing] = useState(initiallyFollowing);
   const [pending, setPending] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getFollowStatus(userId)
+      .then((status) => {
+        if (!cancelled) setFollowing(status.following);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
 
   async function handleClick() {
     if (pending) return;
