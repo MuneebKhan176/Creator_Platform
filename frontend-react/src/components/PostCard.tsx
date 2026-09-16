@@ -1,20 +1,26 @@
-// frontend-react/src/components/PostCard.tsx — added the bookmark toggle next to Like
+// frontend-react/src/components/PostCard.tsx
 import { useState } from "react";
 import type { Post } from "../api/posts";
 import { likePost, unlikePost } from "../api/likes";
 import { bookmarkPost, unbookmarkPost } from "../api/bookmarks";
 import CommentSection from "./CommentSection";
+import FollowButton from "./FollowButton";
 
 function formatTimestamp(iso: string): string {
   return new Date(iso).toLocaleString();
 }
 
-export default function PostCard({ post }: { post: Post }) {
+interface PostCardProps {
+  post: Post;
+  initialBookmarked?: boolean;
+  onBookmarkChange?: (bookmarked: boolean) => void;
+}
+
+export default function PostCard({ post, initialBookmarked = false, onBookmarkChange }: PostCardProps) {
   const [liked, setLiked] = useState(post.likedByCurrentUser);
   const [likeCount, setLikeCount] = useState(post.likeCount);
   const [likePending, setLikePending] = useState(false);
-
-  const [bookmarked, setBookmarked] = useState(false); // feed doesn't carry this; see note below
+  const [bookmarked, setBookmarked] = useState(initialBookmarked);
   const [bookmarkPending, setBookmarkPending] = useState(false);
 
   const images = post.media.filter((m) => m.mediaType === "IMAGE");
@@ -47,6 +53,7 @@ export default function PostCard({ post }: { post: Post }) {
     try {
       const status = previous ? await unbookmarkPost(post.id) : await bookmarkPost(post.id);
       setBookmarked(status.bookmarked);
+      onBookmarkChange?.(status.bookmarked);
     } catch {
       setBookmarked(previous);
     } finally {
@@ -56,10 +63,13 @@ export default function PostCard({ post }: { post: Post }) {
 
   return (
     <article className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-      <div className="flex items-center justify-between">
-        <span className="text-sm font-semibold text-gray-900">{post.authorUsername}</span>
-        <span className="text-xs text-gray-400">{formatTimestamp(post.createdAt)}</span>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <span className="text-sm font-semibold text-gray-900">{post.authorUsername}</span>
+        </div>
+        {post.authorId !== undefined && <FollowButton userId={post.authorId} />}
       </div>
+      <span className="mt-1 block text-xs text-gray-400">{formatTimestamp(post.createdAt)}</span>
 
       {post.content && <p className="mt-2 whitespace-pre-wrap text-sm text-gray-800">{post.content}</p>}
 
