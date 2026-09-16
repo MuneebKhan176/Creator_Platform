@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchBookmarks, unbookmarkPost } from "../api/bookmarks";
+import { fetchBookmarks } from "../api/bookmarks";
 import type { BookmarkedPost } from "../api/bookmarks";
 import PostCard from "../components/PostCard";
 
@@ -33,12 +33,9 @@ export default function BookmarksPage() {
     loadBookmarks(0, false);
   }, []);
 
-  async function handleRemoveBookmark(postId: number) {
-    try {
-      await unbookmarkPost(postId);
+  function handleBookmarkChange(postId: number, bookmarked: boolean) {
+    if (!bookmarked) {
       setBookmarks((previous) => previous.filter((item) => item.post.id !== postId));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to remove bookmark.");
     }
   }
 
@@ -57,16 +54,12 @@ export default function BookmarksPage() {
         )}
 
         {bookmarks.map((item) => (
-          <div key={item.post.id} className="relative">
-            <PostCard post={item.post} />
-            <button
-              type="button"
-              onClick={() => handleRemoveBookmark(item.post.id)}
-              className="absolute right-4 top-4 rounded-md border border-gray-200 bg-white px-2 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50"
-            >
-              Remove bookmark
-            </button>
-          </div>
+          <PostCard
+            key={item.post.id}
+            post={item.post}
+            initialBookmarked={true}
+            onBookmarkChange={(bookmarked) => handleBookmarkChange(item.post.id, bookmarked)}
+          />
         ))}
 
         {hasMore && !loading && (
