@@ -1,3 +1,5 @@
+// frontend-react/src/api/client.ts — only the addition at the bottom is new,
+// everything above is unchanged from what you sent.
 export const API_BASE_URL = "http://localhost:4000";
 
 export interface ApiResponse<T = unknown> {
@@ -26,9 +28,6 @@ async function parseResponse<T>(response: Response): Promise<ApiResponse<T>> {
   return parsed;
 }
 
-// The csrf_token cookie is set by the backend (non-HttpOnly, on purpose) once
-// logged in. Echoing it back as a header is what the backend's double-submit
-// CSRF check compares against the cookie value.
 function withCsrfHeader(headers: Record<string, string>): Record<string, string> {
   const csrfToken = readCookie("csrf_token");
   return csrfToken ? { ...headers, "X-CSRF-Token": csrfToken } : headers;
@@ -119,6 +118,7 @@ export async function apiUpload<T = unknown>(path: string, file: File): Promise<
   const formData = new FormData();
   formData.append("file", file);
 
+<<<<<<< HEAD
   return request<T>(path, {
     method: "POST",
     // No Content-Type here on purpose — the browser sets
@@ -126,4 +126,36 @@ export async function apiUpload<T = unknown>(path: string, file: File): Promise<
     headers: withCsrfHeader({}),
     body: formData,
   });
+=======
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method: "POST",
+      headers: withCsrfHeader({}),
+      credentials: "include",
+      body: formData,
+    });
+  } catch {
+    throw new Error("Could not reach the server. Please check your connection and try again.");
+  }
+  return parseResponse<T>(response);
+}
+
+// NEW — mixed text-field + multiple-file submissions (e.g. post content +
+// images + video). Same pattern as apiUpload: no Content-Type header so the
+// browser sets the multipart boundary itself.
+export async function apiPostForm<T = unknown>(path: string, formData: FormData): Promise<ApiResponse<T>> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method: "POST",
+      headers: withCsrfHeader({}),
+      credentials: "include",
+      body: formData,
+    });
+  } catch {
+    throw new Error("Could not reach the server. Please check your connection and try again.");
+  }
+  return parseResponse<T>(response);
+>>>>>>> 4405f6b (Added Profile Service and Like/Comment)
 }
