@@ -17,6 +17,9 @@ export default function DashboardPage() {
       <div className="mx-auto mb-6 flex w-full max-w-lg items-center justify-between">
         <p className="text-sm text-gray-600">Signed in as {user?.username}</p>
         <div className="flex items-center gap-3">
+          <Link to="/dashboard/bookmarks" className="text-sm font-semibold text-gray-700 hover:text-gray-900">
+            Bookmarks
+          </Link>
           <Link to="/dashboard/profile" className="text-sm font-semibold text-gray-700 hover:text-gray-900">
             Edit profile
           </Link>
