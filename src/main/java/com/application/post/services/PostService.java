@@ -1,4 +1,4 @@
-// src/main/java/com/application/post/services/PostService.java — constructor + getFeed() only
+// src/main/java/com/application/post/services/PostService.java — only getFeed() split out; createPost() unchanged
 package com.application.post.services;
 
 import com.application.authentication.entities.User;
@@ -43,7 +43,7 @@ public class PostService {
     private final PostRepository postRepository;
     private final CloudStorageService cloudStorageService;
     private final CommentRepository commentRepository;
-    private final PostLikeRepository postLikeRepository; // NEW
+    private final PostLikeRepository postLikeRepository;
 
     public PostService(PostRepository postRepository, CloudStorageService cloudStorageService,
                         CommentRepository commentRepository, PostLikeRepository postLikeRepository) {
@@ -121,31 +121,43 @@ public class PostService {
                 .map(PostResponse::from)
                 .collect(Collectors.toList());
 
-        if (!posts.isEmpty()) {
-            List<Long> postIds = posts.stream().map(PostResponse::getId).collect(Collectors.toList());
-
-            Map<Long, Long> commentCounts = commentRepository.countGroupedByPostIds(postIds).stream()
-                    .collect(Collectors.toMap(
-                            CommentRepository.PostCommentCount::getPostId,
-                            CommentRepository.PostCommentCount::getTotal));
-
-            Map<Long, Long> likeCounts = postLikeRepository.countGroupedByPostIds(postIds).stream()
-                    .collect(Collectors.toMap(
-                            PostLikeRepository.PostLikeCount::getPostId,
-                            PostLikeRepository.PostLikeCount::getTotal));
-
-            Set<Long> likedPostIds = currentUserId == null
-                    ? Set.of()
-                    : new HashSet<>(postLikeRepository.findLikedPostIds(currentUserId, postIds));
-
-            posts.forEach(p -> {
-                p.setCommentCount(commentCounts.getOrDefault(p.getId(), 0L));
-                p.setLikeCount(likeCounts.getOrDefault(p.getId(), 0L));
-                p.setLikedByCurrentUser(likedPostIds.contains(p.getId()));
-            });
-        }
+        attachEngagement(posts, currentUserId);
 
         return new FeedResponse(posts, safePage, safeSize, result.getTotalElements(), result.hasNext());
+    }
+
+    /**
+     * Batch-populates commentCount/likeCount/likedByCurrentUser on an
+     * arbitrary list of PostResponses (in place). Extracted out of getFeed()
+     * so other callers — e.g. the bookmarks list — get the same counts
+     * without duplicating the query logic. Behavior for getFeed() itself is
+     * unchanged; this is a pure refactor.
+     */
+    public void attachEngagement(List<PostResponse> posts, Long currentUserId) {
+        if (posts.isEmpty()) {
+            return;
+        }
+        List<Long> postIds = posts.stream().map(PostResponse::getId).collect(Collectors.toList());
+
+        Map<Long, Long> commentCounts = commentRepository.countGroupedByPostIds(postIds).stream()
+                .collect(Collectors.toMap(
+                        CommentRepository.PostCommentCount::getPostId,
+                        CommentRepository.PostCommentCount::getTotal));
+
+        Map<Long, Long> likeCounts = postLikeRepository.countGroupedByPostIds(postIds).stream()
+                .collect(Collectors.toMap(
+                        PostLikeRepository.PostLikeCount::getPostId,
+                        PostLikeRepository.PostLikeCount::getTotal));
+
+        Set<Long> likedPostIds = currentUserId == null
+                ? Set.of()
+                : new HashSet<>(postLikeRepository.findLikedPostIds(currentUserId, postIds));
+
+        posts.forEach(p -> {
+            p.setCommentCount(commentCounts.getOrDefault(p.getId(), 0L));
+            p.setLikeCount(likeCounts.getOrDefault(p.getId(), 0L));
+            p.setLikedByCurrentUser(likedPostIds.contains(p.getId()));
+        });
     }
 
     private PostMediaType resolveMediaType(String contentType) {

@@ -1,7 +1,8 @@
-// frontend-react/src/components/PostCard.tsx — added the like button
+// frontend-react/src/components/PostCard.tsx — added the bookmark toggle next to Like
 import { useState } from "react";
 import type { Post } from "../api/posts";
 import { likePost, unlikePost } from "../api/likes";
+import { bookmarkPost, unbookmarkPost } from "../api/bookmarks";
 import CommentSection from "./CommentSection";
 
 function formatTimestamp(iso: string): string {
@@ -11,21 +12,21 @@ function formatTimestamp(iso: string): string {
 export default function PostCard({ post }: { post: Post }) {
   const [liked, setLiked] = useState(post.likedByCurrentUser);
   const [likeCount, setLikeCount] = useState(post.likeCount);
-  const [pending, setPending] = useState(false);
+  const [likePending, setLikePending] = useState(false);
+
+  const [bookmarked, setBookmarked] = useState(false); // feed doesn't carry this; see note below
+  const [bookmarkPending, setBookmarkPending] = useState(false);
 
   const images = post.media.filter((m) => m.mediaType === "IMAGE");
   const videos = post.media.filter((m) => m.mediaType === "VIDEO");
 
   async function handleLikeToggle() {
-    if (pending) return;
-
-    // Optimistic update, reverted on failure.
+    if (likePending) return;
     const previousLiked = liked;
     const previousCount = likeCount;
-    setPending(true);
+    setLikePending(true);
     setLiked(!previousLiked);
     setLikeCount(previousLiked ? previousCount - 1 : previousCount + 1);
-
     try {
       const status = previousLiked ? await unlikePost(post.id) : await likePost(post.id);
       setLiked(status.liked);
@@ -34,7 +35,22 @@ export default function PostCard({ post }: { post: Post }) {
       setLiked(previousLiked);
       setLikeCount(previousCount);
     } finally {
-      setPending(false);
+      setLikePending(false);
+    }
+  }
+
+  async function handleBookmarkToggle() {
+    if (bookmarkPending) return;
+    const previous = bookmarked;
+    setBookmarkPending(true);
+    setBookmarked(!previous);
+    try {
+      const status = previous ? await unbookmarkPost(post.id) : await bookmarkPost(post.id);
+      setBookmarked(status.bookmarked);
+    } catch {
+      setBookmarked(previous);
+    } finally {
+      setBookmarkPending(false);
     }
   }
 
@@ -59,14 +75,23 @@ export default function PostCard({ post }: { post: Post }) {
         <video key={vid.id} src={vid.url} controls className="mt-3 w-full rounded-md" />
       ))}
 
-      <div className="mt-3 flex items-center gap-4 border-t border-gray-100 pt-3">
+      <div className="mt-3 flex items-center justify-between border-t border-gray-100 pt-3">
         <button
           type="button"
           onClick={handleLikeToggle}
-          disabled={pending}
+          disabled={likePending}
           className={`text-xs font-semibold ${liked ? "text-rose-600" : "text-gray-500 hover:text-gray-800"} disabled:opacity-60`}
         >
           {liked ? "♥" : "♡"} {likeCount > 0 ? likeCount : "Like"}
+        </button>
+
+        <button
+          type="button"
+          onClick={handleBookmarkToggle}
+          disabled={bookmarkPending}
+          className={`text-xs font-semibold ${bookmarked ? "text-amber-600" : "text-gray-500 hover:text-gray-800"} disabled:opacity-60`}
+        >
+          {bookmarked ? "🔖 Saved" : "🔖 Save"}
         </button>
       </div>
 

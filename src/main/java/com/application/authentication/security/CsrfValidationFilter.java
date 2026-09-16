@@ -1,3 +1,4 @@
+// src/main/java/com/application/authentication/security/CsrfValidationFilter.java — added "/api/v1/profile"
 package com.application.authentication.security;
 
 import jakarta.servlet.FilterChain;
@@ -10,12 +11,6 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.util.Set;
 
-/**
- * Double-submit CSRF check for cookie-authenticated, state-changing
- * endpoints. SameSite=Lax already blocks the auth cookies from attaching to
- * a cross-site POST/DELETE in modern browsers; this is an independent
- * second layer that doesn't rely solely on SameSite enforcement.
- */
 public class CsrfValidationFilter extends OncePerRequestFilter {
 
     private static final String CSRF_COOKIE_NAME = "csrf_token";
@@ -24,7 +19,11 @@ public class CsrfValidationFilter extends OncePerRequestFilter {
     private static final Set<String> PROTECTED_PREFIXES = Set.of(
             "/api/v1/auth/logout",
             "/api/v1/auth/change-password",
-            "/api/v1/auth/sessions"
+            "/api/v1/auth/sessions",
+            "/api/v1/posts",
+            "/api/v1/profile" // NEW — previously missing entirely; also now
+                               // covers the pre-existing PUT /profile and
+                               // picture/banner upload endpoints.
     );
 
     @Override
